@@ -712,11 +712,12 @@ def update_users_cpu_quota(user=None, override_policy_checks: bool = False) -> N
         timer_user.count_event()
 
 
-def update_workspace_retention_rules(rules, status) -> None:
+def update_workspace_retention_rules(rules, status, commit: bool = True) -> None:
     """Update workspace retention rules status.
 
     :param rules: Workspace retention rules that need to be updated
     :param status: Status accoring which retention rules need to be updated
+    :param commit: Whether to commit the database transaction
 
     :type rules: reana_db.models.WorkspaceRetentionRule
     :type status: reana_db.models.WorkspaceRetentionRuleStatus
@@ -724,6 +725,12 @@ def update_workspace_retention_rules(rules, status) -> None:
     from reana_db.database import Session
     from reana_db.models import WorkspaceRetentionRuleStatus
 
+    if not commit:
+        # The scoped session intentionally disables autoflush. Deferred status
+        # changes are caller-owned transactions, so make any rules/workflows
+        # staged by earlier helper calls visible to the query without committing
+        # them. A later rollback still removes every flushed change atomically.
+        Session.flush()
     for rule in rules:
         if rule.status == status:
             continue
@@ -740,7 +747,8 @@ def update_workspace_retention_rules(rules, status) -> None:
             ) + timedelta(days=rule.retention_days)
         rule.status = status
         Session.add(rule)
-    Session.commit()
+    if commit:
+        Session.commit()
 
 
 def get_disk_usage_or_zero(workspace_path, override_policy_checks: bool = False) -> int:

@@ -251,6 +251,112 @@ def test_workflow_retention_rules(db, session, new_user):
     assert "duplicate key value violates unique constraint" in e.value.args[0]
 
 
+def test_workspace_retention_rule_updates_can_defer_commit(monkeypatch):
+    """Test retention rule updates can participate in a caller transaction."""
+    session = mock.MagicMock()
+    monkeypatch.setattr(database, "Session", session)
+    workflow = mock.Mock(id_=uuid4())
+    retention_rules = [{"workspace_files": "**/*.root", "retention_days": 1}]
+
+    Workflow.set_workspace_retention_rules(workflow, retention_rules, commit=False)
+
+    session.add.assert_called_once()
+    session.commit.assert_not_called()
+
+    session.reset_mock()
+    Workflow.set_workspace_retention_rules(workflow, retention_rules)
+    session.commit.assert_called_once_with()
+
+
+def test_deferred_retention_status_updates_see_staged_rules(db, session, new_user):
+    """Deferred helper calls compose into one visible caller transaction."""
+    rules = [{"workspace_files": "**/*.root", "retention_days": 1}]
+    workflow = Workflow(
+        id_=str(uuid4()),
+        name="deferred-rules",
+        owner_id=new_user.id_,
+        reana_specification=[],
+        type_="serial",
+        logs="",
+    )
+    session.add(workflow)
+    session.commit()
+
+    workflow.set_workspace_retention_rules(rules, commit=False)
+    workflow.activate_workspace_retention_rules(commit=False)
+    session.commit()
+    session.expire_all()
+    assert workflow.retention_rules[0].status == WorkspaceRetentionRuleStatus.active
+
+    restart = Workflow(
+        id_=str(uuid4()),
+        name=workflow.name,
+        owner_id=new_user.id_,
+        reana_specification=[],
+        type_="serial",
+        logs="",
+        restart=True,
+    )
+    session.add(restart)
+    restart.set_workspace_retention_rules(rules, commit=False)
+    restart.inactivate_workspace_retention_rules(commit=False)
+    session.commit()
+    session.expire_all()
+    assert workflow.retention_rules[0].status == WorkspaceRetentionRuleStatus.inactive
+    assert restart.retention_rules[0].status == WorkspaceRetentionRuleStatus.inactive
+
+
+@pytest.mark.parametrize(
+    "method_name,query_method",
+    [
+        ("activate_workspace_retention_rules", "filter_by"),
+        ("inactivate_workspace_retention_rules", "join_filter"),
+    ],
+)
+def test_workspace_retention_status_methods_forward_commit(
+    monkeypatch, method_name, query_method
+):
+    """Test workflow retention status helpers forward transaction control."""
+    session = mock.MagicMock()
+    monkeypatch.setattr(database, "Session", session)
+    update_rules = mock.Mock()
+    monkeypatch.setattr(models_module, "update_workspace_retention_rules", update_rules)
+    workflow = mock.Mock(id_=uuid4())
+    workflow.get_all_restarts.return_value.subquery.return_value = mock.Mock()
+
+    getattr(Workflow, method_name)(workflow, commit=False)
+
+    if query_method == "filter_by":
+        rules = session.query.return_value.filter_by.return_value
+    else:
+        rules = session.query.return_value.join.return_value.filter.return_value
+    update_rules.assert_called_once_with(rules, mock.ANY, commit=False)
+
+    update_rules.reset_mock()
+    getattr(Workflow, method_name)(workflow)
+    update_rules.assert_called_once_with(mock.ANY, mock.ANY, commit=True)
+
+
+def test_update_workspace_retention_rules_commit_defaults_to_true(monkeypatch):
+    """Test standalone retention updates keep their historical commit behavior."""
+    session = mock.MagicMock()
+    monkeypatch.setattr(database, "Session", session)
+    rule = mock.Mock(
+        status=WorkspaceRetentionRuleStatus.created,
+        retention_days=1,
+    )
+    rule.can_transition_to.return_value = True
+
+    update_workspace_retention_rules(
+        [rule], WorkspaceRetentionRuleStatus.active, commit=False
+    )
+    session.flush.assert_called_once_with()
+    session.commit.assert_not_called()
+
+    update_workspace_retention_rules([rule], WorkspaceRetentionRuleStatus.inactive)
+    session.commit.assert_called_once_with()
+
+
 @mock.patch(
     "reana_commons.utils.get_disk_usage", return_value=[{"size": {"raw": "128"}}]
 )

@@ -784,7 +784,9 @@ class Workflow(Base, Timestamp, QuotaBase):
             ),
         )
 
-    def set_workspace_retention_rules(self, rules: List[Dict[str, str]]):
+    def set_workspace_retention_rules(
+        self, rules: List[Dict[str, str]], commit: bool = True
+    ):
         """Set workspace retention rules for the workflow."""
         from .database import Session
 
@@ -795,16 +797,19 @@ class Workflow(Base, Timestamp, QuotaBase):
                 retention_days=rule["retention_days"],
             )
             Session.add(wr)
-        Session.commit()
+        if commit:
+            Session.commit()
 
-    def activate_workspace_retention_rules(self):
+    def activate_workspace_retention_rules(self, commit: bool = True):
         """Activate workspace retention rules for the workflow."""
         from .database import Session
 
         rules = Session.query(WorkspaceRetentionRule).filter_by(
             workflow_id=self.id_, status=WorkspaceRetentionRuleStatus.created
         )
-        update_workspace_retention_rules(rules, WorkspaceRetentionRuleStatus.active)
+        update_workspace_retention_rules(
+            rules, WorkspaceRetentionRuleStatus.active, commit=commit
+        )
 
     def get_all_restarts(self):
         """Get all the restarts of this workflow, including the original workflow.
@@ -822,7 +827,7 @@ class Workflow(Base, Timestamp, QuotaBase):
         )
         return restarts
 
-    def inactivate_workspace_retention_rules(self):
+    def inactivate_workspace_retention_rules(self, commit: bool = True):
         """Inactivate workspace retention rules for all the parent workflows."""
         from .database import Session
 
@@ -838,7 +843,9 @@ class Workflow(Base, Timestamp, QuotaBase):
                 ),
             )
         )
-        update_workspace_retention_rules(rules, WorkspaceRetentionRuleStatus.inactive)
+        update_workspace_retention_rules(
+            rules, WorkspaceRetentionRuleStatus.inactive, commit=commit
+        )
 
     def workspace_has_pending_retention_rules(self):
         """Check whether the workspace has retention rules that are pending.
